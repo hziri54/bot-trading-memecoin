@@ -1,0 +1,32 @@
+const { Keypair, Connection, PublicKey } = require('@solana/web3.js');
+const fs = require('fs');
+const path = require('path');
+
+const walletsDir = path.resolve(__dirname, '../../wallets');
+if (!fs.existsSync(walletsDir)) {
+    fs.mkdirSync(walletsDir);
+}
+
+const createWalletCommand = async (ctx) => {
+    const userId = ctx.chat.id;
+    const walletPath = path.join(walletsDir, `${userId}.json`);
+
+    // Vérifier si un wallet existe déjà
+    if (fs.existsSync(walletPath)) {
+        return ctx.reply("⚠️ Vous avez déjà un wallet. Utilisez `/get_wallet` pour voir votre solde.");
+    }
+
+    // Générer un nouveau wallet
+    const keypair = Keypair.generate();
+    const publicKey = keypair.publicKey.toString();
+    const secretKey = Buffer.from(keypair.secretKey).toString('hex');
+
+    // Sauvegarder le wallet comme wallet par défaut
+    fs.writeFileSync(walletPath, JSON.stringify({ publicKey, secretKey }, null, 2));
+
+    ctx.reply(`✅ *Votre wallet par défaut a été créé !*\n\n💼 *Adresse publique:* \`${publicKey}\`\n\nUtilisez `/get_wallet` pour voir votre solde.`, {
+        parse_mode: 'Markdown'
+    });
+};
+
+module.exports = createWalletCommand;
