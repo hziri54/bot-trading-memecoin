@@ -1,5 +1,5 @@
 const priceCommand = require('./price');
-const createWalletCommand = require('./create_wallet');
+const createWalletCommand = require('./createWallet');
 const getWalletCommand = require('./getWallet');
 const deleteWalletCommand = require('./deleteWallet');
 

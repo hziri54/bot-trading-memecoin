@@ -1,35 +1,49 @@
-const { Connection, PublicKey } = require('@solana/web3.js');
 const fs = require('fs');
 const path = require('path');
 
-const getWalletCommand = async (ctx) => {
+async function getWallet(ctx) {
+    console.log("▶️ Commande /continuer reçue pour afficher le wallet");
+
     const userId = ctx.chat.id;
-    const walletPath = path.join(__dirname, `../../wallets/${userId}.json`);
+    const walletsDir = './wallets';
+    const walletPath = path.join(walletsDir, `${userId}.json`);
 
-    // Vérifier si le wallet existe
     if (!fs.existsSync(walletPath)) {
-        return ctx.reply("❌ Aucun wallet trouvé. Créez-en un avec `/create_wallet`.");
+        console.error(`⚠️ Wallet introuvable pour ${userId}, création d'un nouveau wallet...`);
+        await createWallet(ctx);
     }
-
-    // Charger les données du wallet
-    const walletData = JSON.parse(fs.readFileSync(walletPath, 'utf-8'));
-    const publicKey = new PublicKey(walletData.publicKey);
-
-    // Connexion à Solana
-    const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
+    
 
     try {
-        // Récupérer le solde du wallet
-        const balanceLamports = await connection.getBalance(publicKey);
-        const balanceSOL = balanceLamports / 1e9; // Convertir en SOL
+        const walletData = JSON.parse(fs.readFileSync(walletPath, 'utf-8'));
 
-        ctx.reply(`💼 *Wallet par défaut :*\n\n📥 *Adresse publique:* \`${walletData.publicKey}\`\n💰 *Solde:* \`${balanceSOL.toFixed(4)} SOL\``, {
-            parse_mode: 'Markdown'
-        });
+        if (!walletData.publicKey) {
+            console.error(`❌ Clé publique manquante dans le fichier du wallet ${userId}`);
+            return ctx.reply("⚠️ Erreur : Wallet corrompu. Veuillez régénérer un wallet avec /commencer.");
+        }
+
+        await ctx.reply(
+            `💰 *Solana Wallet · 📈*\n\n` +
+            `💼 *Adresse:* \`${walletData.publicKey}\`\n` +
+            `💸 *Balance:* N/A SOL\n` +
+            `—`,
+            {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "📋 Copier Adresse", callback_data: "copy_address" }],
+                        [{ text: "🔄 Refresh", callback_data: "refresh_balance" }],
+                        [{ text: "🛒 Acheter", callback_data: "buy" }, { text: "📉 Vendre", callback_data: "sell" }],
+                        [{ text: "📊 Positions", callback_data: "positions" }, { text: "📜 Ordres", callback_data: "orders" }],
+                        [{ text: "⚙️ Paramètres", callback_data: "settings" }]
+                    ]
+                }
+            }
+        );
     } catch (err) {
-        console.error("❌ Erreur lors de la récupération du solde :", err);
-        ctx.reply("❌ Impossible d'obtenir votre solde pour le moment. Réessayez plus tard.");
+        console.error("❌ Erreur de lecture du wallet :", err);
+        return ctx.reply("⚠️ Erreur : Impossible de lire votre wallet. Essayez de le régénérer avec /commencer.");
     }
-};
+}
 
-module.exports = getWalletCommand;
+module.exports = getWallet;

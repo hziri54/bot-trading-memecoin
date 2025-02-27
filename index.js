@@ -1,126 +1,144 @@
 require('dotenv').config();
-const { Telegraf } = require('telegraf');
+const fs = require('fs');
+const { Telegraf, Markup } = require('telegraf');
+const { PublicKey, Connection } = require('@solana/web3.js');
+const {
+    acheterCommand,
+    handleTokenAddress,
+    handleInvestmentAmount,
+    confirmAcheter,
+    cancelAcheter
+} = require('./src/commands/acheter');
 
-// Import des commandes
-const priceCommand = require('./src/commands/price');
-const createWalletCommand = require('./src/commands/createWallet');
-const getWalletCommand = require('./src/commands/getWallet');
-const deleteWalletCommand = require('./src/commands/deleteWallet');
-const menuCommand = require('./src/commands/menu');
-const buyCommand = require('./src/commands/buy');
+const SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
+const connection = new Connection(SOLANA_RPC_URL, "confirmed");
 
-// Vérifie si le token est chargé correctement
 if (!process.env.BOT_TOKEN) {
-    console.error("❌ BOT_TOKEN est manquant dans le fichier .env !");
+    console.error("❌ BOT_TOKEN est manquant !");
     process.exit(1);
 }
 
-// Initialise le bot
 const bot = new Telegraf(process.env.BOT_TOKEN);
+console.log("✅ Bot lancé avec succès !");
 
-console.log("✅ Bot initialisé avec succès !");
+// ✅ Stockage des sessions d'achat
+const acheterSessions = {};
 
-// Gestion des erreurs globales
-bot.catch((err, ctx) => {
-    console.error(`❌ Erreur détectée pour l'utilisateur ${ctx.chat.id} :`, err);
-    ctx.reply("⚠️ Une erreur est survenue. Réessayez plus tard.");
-});
+// ✅ Commande Bienvenue (Première connexion)
+bot.command('bienvenue', async (ctx) => {
+    const userId = ctx.chat.id;
+    const walletPath = `./wallets/${userId}.json`;
 
-// Commande /start (Crée un wallet par défaut et affiche le solde)
-bot.start(async (ctx) => {
-    console.log("▶️ Commande /start reçue");
+    if (!fs.existsSync(walletPath)) {
+        console.log(`🔄 Génération du wallet pour ${userId}...`);
+        
+        // Création d'un wallet
+        const keypair = require('@solana/web3.js').Keypair.generate();
+        const walletData = {
+            publicKey: keypair.publicKey.toString(),
+            privateKey: Buffer.from(keypair.secretKey).toString('hex')
+        };
 
-    await ctx.reply("🚀 *Bienvenue sur le bot de trading arcade !*\n\nChargement de votre wallet...", { parse_mode: 'Markdown' });
+        fs.writeFileSync(walletPath, JSON.stringify(walletData, null, 2));
+        console.log(`✅ Wallet créé pour ${userId} : ${walletData.publicKey}`);
 
-    try {
-        // Vérifie si un wallet existe, sinon en crée un
-        await createWalletCommand(ctx);
-        // Affiche le solde immédiatement
-        await getWalletCommand(ctx);
-    } catch (err) {
-        console.error("❌ Erreur lors du chargement du wallet :", err);
-        ctx.reply("⚠️ Impossible de charger votre wallet.");
+        await ctx.reply(
+            `✅ *Votre wallet a été généré !*\n\n` +
+            `💼 *Adresse:* \`${walletData.publicKey}\`\n\n` +
+            `🔑 *Clé privée (disparaît dans 1 min) :*\n\`${walletData.privateKey}\`\n\n` +
+            `⚠️ *Sauvegardez immédiatement votre clé privée.* Elle sera supprimée pour la sécurité.`,
+            Markup.inlineKeyboard([Markup.button.callback("✅ Continuer", "continuer_menu")]),
+            { parse_mode: 'Markdown' }
+        );
+
+        setTimeout(() => {
+            if (fs.existsSync(walletPath)) {
+                fs.writeFileSync(walletPath, JSON.stringify({ publicKey: walletData.publicKey }, null, 2));
+                ctx.reply("🛑 *Votre clé privée a été supprimée pour des raisons de sécurité.*", { parse_mode: 'Markdown' });
+            }
+        }, 60000);
+    } else {
+        await ctx.reply("🛑 *Vous avez déjà un wallet !* Utilisez `/continuer` pour accéder au menu.");
     }
 });
 
-// Commande /menu (Accéder au menu interactif)
-bot.command('menu', (ctx) => {
-    console.log("▶️ Commande /menu reçue");
-    menuCommand(ctx);
+// ✅ Commande Continuer (Affichage du menu principal)
+bot.command('continuer', async (ctx) => {
+    const userId = ctx.chat.id;
+    const walletPath = `./wallets/${userId}.json`;
+
+    if (!fs.existsSync(walletPath)) {
+        return ctx.reply("❌ *Aucun wallet trouvé.* Utilisez `/bienvenue` pour en créer un.");
+    }
+
+    const walletData = JSON.parse(fs.readFileSync(walletPath, 'utf-8'));
+    const publicKey = new PublicKey(walletData.publicKey);
+
+    // Récupérer le solde
+    const balance = await connection.getBalance(publicKey);
+    const solBalance = (balance / 1e9).toFixed(4);
+
+    await ctx.reply(
+        `💰 *Solana Wallet · 📈*\n\n` +
+        `💼 *Adresse:* \`${walletData.publicKey}\`\n\n` +
+        `💸 *Solde:* ${solBalance} SOL\n\n` +
+        `🔄 Cliquez sur *Refresh* pour mettre à jour le solde.`,
+        Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Refresh", "refresh_solde")],
+            [Markup.button.callback("🛒 Acheter", "acheter")],
+            [Markup.button.callback("📤 Vendre", "vendre")],
+            [Markup.button.callback("⚙️ Paramètres", "settings")]
+        ]),
+        { parse_mode: 'Markdown' }
+    );
 });
 
-// Commande /price (Voir le prix d'un token)
-bot.command('price', (ctx) => {
-    console.log("▶️ Commande /price reçue");
-    try {
-        priceCommand(ctx);
-    } catch (err) {
-        console.error("❌ Erreur dans la commande /price :", err);
-        ctx.reply("⚠️ Une erreur est survenue. Réessayez plus tard.");
+// ✅ Action du bouton Refresh (Mise à jour du solde)
+bot.action('refresh_solde', async (ctx) => {
+    const userId = ctx.chat.id;
+    const walletPath = `./wallets/${userId}.json`;
+
+    if (!fs.existsSync(walletPath)) {
+        return ctx.reply("❌ *Aucun wallet trouvé.* Utilisez `/bienvenue` pour en créer un.");
+    }
+
+    const walletData = JSON.parse(fs.readFileSync(walletPath, 'utf-8'));
+    const publicKey = new PublicKey(walletData.publicKey);
+    const balance = await connection.getBalance(publicKey);
+    const solBalance = (balance / 1e9).toFixed(4);
+
+    await ctx.editMessageText(
+        `💰 *Solana Wallet · 📈*\n\n` +
+        `💼 *Adresse:* \`${walletData.publicKey}\`\n\n` +
+        `💸 *Solde:* ${solBalance} SOL\n\n` +
+        `🔄 Cliquez sur *Refresh* pour mettre à jour le solde.`,
+        Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Refresh", "refresh_solde")],
+            [Markup.button.callback("🛒 Acheter", "acheter")],
+            [Markup.button.callback("📤 Vendre", "vendre")],
+            [Markup.button.callback("⚙️ Paramètres", "settings")]
+        ]),
+        { parse_mode: 'Markdown' }
+    );
+});
+
+// ✅ Action du bouton Acheter (Lancer la commande acheter)
+bot.action('acheter', async (ctx) => acheterCommand(ctx));
+
+// ✅ Gestion des messages pour l'achat (étapes)
+bot.on('text', async (ctx) => {
+    const userId = ctx.chat.id;
+    if (acheterSessions[userId]) {
+        if (acheterSessions[userId].step === 1) return handleTokenAddress(ctx, acheterSessions);
+        if (acheterSessions[userId].step === 2) return handleInvestmentAmount(ctx, acheterSessions);
     }
 });
 
-// Commande /create_wallet (Crée un wallet si inexistant)
-bot.command('create_wallet', (ctx) => {
-    console.log("▶️ Commande /create_wallet reçue");
-    try {
-        createWalletCommand(ctx);
-    } catch (err) {
-        console.error("❌ Erreur dans la commande /create_wallet :", err);
-        ctx.reply("⚠️ Impossible de créer le wallet. Réessayez plus tard.");
-    }
-});
+// ✅ Gestion des actions pour confirmer/annuler l'achat
+bot.action(/^confirm_acheter_(\d+)$/, (ctx) => confirmAcheter(ctx, acheterSessions));
+bot.action(/^cancel_acheter_(\d+)$/, (ctx) => cancelAcheter(ctx, acheterSessions));
 
-// Commande /get_wallet (Affiche le wallet et le solde)
-bot.command('get_wallet', async (ctx) => {
-    console.log("▶️ Commande /get_wallet reçue");
-    try {
-        await getWalletCommand(ctx);
-    } catch (err) {
-        console.error("❌ Erreur dans la commande /get_wallet :", err);
-        ctx.reply("⚠️ Impossible d'obtenir votre wallet. Réessayez plus tard.");
-    }
-});
-
-// Commande /delete_wallet (Supprime le wallet de l'utilisateur)
-bot.command('delete_wallet', (ctx) => {
-    console.log("▶️ Commande /delete_wallet reçue");
-    try {
-        deleteWalletCommand(ctx);
-    } catch (err) {
-        console.error("❌ Erreur dans la commande /delete_wallet :", err);
-        ctx.reply("⚠️ Impossible de supprimer le wallet. Réessayez plus tard.");
-    }
-});
-
-// Commande /buy (Achat d'un token avec un montant en SOL)
-bot.command('buy', (ctx) => {
-    console.log("▶️ Commande /buy reçue");
-    try {
-        buyCommand(ctx);
-    } catch (err) {
-        console.error("❌ Erreur dans la commande /buy :", err);
-        ctx.reply("⚠️ Une erreur est survenue. Réessayez plus tard.");
-    }
-});
-
-// Gestion des actions pour le menu interactif
-const actions = {
-    buy: async (ctx) => await ctx.reply('🎯 *Buy menu coming soon!*', { parse_mode: 'Markdown' }),
-    sell: async (ctx) => await ctx.reply('💥 *Sell menu coming soon!*', { parse_mode: 'Markdown' }),
-    positions: async (ctx) => await ctx.reply('📊 *Here are your current positions!*', { parse_mode: 'Markdown' }),
-    limit_orders: async (ctx) => await ctx.reply('📜 *Here are your limit orders!*', { parse_mode: 'Markdown' }),
-    watchlist: async (ctx) => await ctx.reply('⭐ *Your watchlist is empty for now!*', { parse_mode: 'Markdown' }),
-    settings: async (ctx) => await ctx.reply('⚙️ *Settings menu coming soon!*', { parse_mode: 'Markdown' }),
-    refresh: async (ctx) => await ctx.reply('🔄 *Refreshing your data...*', { parse_mode: 'Markdown' }),
-};
-
-// Attache les actions aux boutons inline
-Object.keys(actions).forEach((action) => {
-    bot.action(action, actions[action]);
-});
-
-// Lancement du bot
+// ✅ Lancement du bot
 bot.launch()
     .then(() => console.log("✅ Bot lancé avec succès !"))
     .catch((err) => {
@@ -128,7 +146,7 @@ bot.launch()
         process.exit(1);
     });
 
-// Gestion des signaux d'arrêt proprement
+// ✅ Gestion des signaux d'arrêt proprement
 process.once('SIGINT', () => {
     console.log("🛑 Bot arrêté (SIGINT)");
     bot.stop("SIGINT");
