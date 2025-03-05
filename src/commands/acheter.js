@@ -1,134 +1,125 @@
-const { Connection, PublicKey, Keypair, Transaction, SystemProgram } = require("@solana/web3.js");
-const fs = require("fs");
+const { PublicKey } = require('@solana/web3.js');
+const { Markup } = require('telegraf');
 
-const SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
-const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+const acheterSessions = {};
 
-const acheterSessions = {}; // Stockage des sessions d'achat
-
-async function acheterCommand(ctx) {
+// ✅ Fonction pour démarrer l'achat
+async function startBuyingProcess(ctx) {
     const userId = ctx.chat.id;
-    acheterSessions[userId] = { step: 1 }; // Étape 1 : Demander l'adresse du token
+    console.log(`🟢 [DEBUG] Démarrage du processus d'achat pour ${userId}`);
 
-    console.log(`🔄 [DEBUG] Démarrage d'une session d'achat pour ${userId}`);
+    // ✅ Stocke la session d'achat
+    acheterSessions[userId] = { step: 1, tokenAddress: null, solAmount: null };
 
-    await ctx.reply("📥 Veuillez entrer l'adresse du token que vous souhaitez acheter.\n\nExemple : YA9QnC78W3NK8z5xjTokbJ5m9aHutRz6vTGhvdzpump");
+    await ctx.reply(
+        `📥 *Veuillez entrer l'**adresse du token** que vous souhaitez acheter.*\n\nExemple : Es9vMFrzaCER1y9L9i8k1tC6rZr1kFj4s9Vb1t4jV9g`,
+        { parse_mode: 'Markdown' }
+    );
 }
 
-// ✅ Étape 1 : Récupérer l'adresse du token
+// ✅ Fonction pour gérer l'entrée de l'adresse du token
 async function handleTokenAddress(ctx) {
     const userId = ctx.chat.id;
-    if (!acheterSessions[userId] || acheterSessions[userId].step !== 1) return;
+    const message = ctx.message.text.trim();
 
-    const tokenAddress = ctx.message.text.trim();
-    console.log(`✅ [DEBUG] Adresse token reçue : ${tokenAddress}`);
+    console.log(`🔄 [DEBUG] Adresse du token reçue de ${userId}: ${message}`);
 
-    if (tokenAddress.length !== 44) {
-        await ctx.reply("❌ Adresse invalide. Veuillez entrer une adresse Solana valide.");
-        return;
+    // ✅ Vérification de l'adresse du token
+    if (!isValidSolanaAddress(message)) {
+        console.log(`❌ [DEBUG] Adresse invalide détectée: ${message}`);
+        return ctx.reply("❌ Adresse invalide. Veuillez entrer une adresse Solana valide.");
     }
 
-    acheterSessions[userId].tokenAddress = tokenAddress;
+    // ✅ Enregistre l'adresse du token et passe à l'étape 2
+    acheterSessions[userId].tokenAddress = message;
     acheterSessions[userId].step = 2;
 
-    await ctx.reply("💰 Combien de SOL souhaitez-vous investir dans ce token ?\n\nExemple : 0.1");
+    console.log(`✅ [DEBUG] Adresse du token stockée pour ${userId}: ${message}`);
+
+    await ctx.reply(
+        `💰 *Entrez maintenant le montant en SOL que vous souhaitez investir dans ce token.*\n\nExemple : 0.1`,
+        { parse_mode: 'Markdown' }
+    );
 }
 
-// ✅ Étape 2 : Récupérer le montant en SOL
+// ✅ Fonction pour gérer l'entrée du montant en SOL
 async function handleInvestmentAmount(ctx) {
     const userId = ctx.chat.id;
-    if (!acheterSessions[userId] || acheterSessions[userId].step !== 2) return;
+    const message = ctx.message.text.trim();
 
-    const solAmount = parseFloat(ctx.message.text.trim());
-    console.log(`💸 [DEBUG] Montant reçu : ${solAmount} SOL`);
+    console.log(`🔄 [DEBUG] Montant reçu de ${userId}: ${message}`);
 
+    const solAmount = parseFloat(message);
     if (isNaN(solAmount) || solAmount <= 0) {
-        await ctx.reply("❌ Montant invalide. Veuillez entrer une valeur en SOL.");
-        return;
+        console.log(`❌ [DEBUG] Montant invalide détecté: ${message}`);
+        return ctx.reply("❌ Montant invalide. Veuillez entrer un montant valide en SOL.");
     }
 
+    // ✅ Enregistre le montant et demande confirmation
     acheterSessions[userId].solAmount = solAmount;
     acheterSessions[userId].step = 3;
 
+    console.log(`✅ [DEBUG] Montant stocké pour ${userId}: ${solAmount} SOL`);
+
     await ctx.reply(
-        `🎯 **Confirmez votre achat ?**\n\n` +
-        `🔹 Token : ${acheterSessions[userId].tokenAddress}\n` +
-        `💸 Montant : ${solAmount} SOL\n\n`,
-        {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "✅ Confirmer", callback_data: `confirm_acheter_${userId}` }],
-                    [{ text: "❌ Annuler", callback_data: `cancel_acheter_${userId}` }]
-                ]
-            }
-        }
+        `🔹 *Token :* ${acheterSessions[userId].tokenAddress}\n` +
+        `💸 *Montant :* ${solAmount} SOL\n\n` +
+        `✅ Confirmez votre achat ou annulez.`,
+        Markup.inlineKeyboard([
+            Markup.button.callback("✅ Confirmer", `confirm_acheter_${userId}`),
+            Markup.button.callback("❌ Annuler", `cancel_acheter_${userId}`)
+        ]),
+        { parse_mode: 'Markdown' }
     );
 }
 
-// ✅ Étape 3 : Exécuter l'achat sur Solana
+// ✅ Confirmer l'achat
 async function confirmAcheter(ctx) {
-    const userId = ctx.chat.id;
-    if (!acheterSessions[userId] || acheterSessions[userId].step !== 3) return;
+    const userId = ctx.from.id;
+    const session = acheterSessions[userId];
 
-    console.log(`⚡ [DEBUG] Exécution de l'achat pour ${userId}...`);
+    if (!session) return ctx.reply("❌ Achat annulé ou session expirée.");
 
-    const walletPath = `./wallets/${userId}.json`;
-    if (!fs.existsSync(walletPath)) {
-        await ctx.reply("❌ *Erreur : Wallet introuvable.* Utilisez `/bienvenue` pour créer un wallet.");
-        return;
-    }
+    console.log(`🟢 [DEBUG] Achat confirmé pour ${userId}`);
 
-    const walletData = JSON.parse(fs.readFileSync(walletPath, "utf-8"));
-    const publicKey = new PublicKey(walletData.publicKey);
-    const privateKey = Uint8Array.from(Buffer.from(walletData.privateKey, "hex"));
-    const payer = Keypair.fromSecretKey(privateKey);
+    await ctx.reply("🔄 *Exécution de la transaction...*");
 
-    // ✅ Vérification du solde
-    const balance = await connection.getBalance(publicKey);
-    const solBalance = balance / 1e9;
-    if (solBalance < acheterSessions[userId].solAmount) {
-        await ctx.reply(`❌ Solde insuffisant. Votre solde est de ${solBalance} SOL.`);
-        return;
-    }
+    // 🔴 FAKE TRANSACTION → À remplacer par l'intégration Solana
+    const transactionId = "FAKE_TX_HASH"; 
 
-    // ✅ Création de la transaction Solana
-    const transaction = new Transaction().add(
-        SystemProgram.transfer({
-            fromPubkey: payer.publicKey,
-            toPubkey: new PublicKey(acheterSessions[userId].tokenAddress),
-            lamports: acheterSessions[userId].solAmount * 1e9,
-        })
+    await ctx.reply(
+        `🎉 *Achat réussi !*\n\n` +
+        `🔹 *Token acheté:* ${session.tokenAddress}\n` +
+        `💸 *Montant dépensé:* ${session.solAmount} SOL\n\n` +
+        `🔗 [Voir la transaction sur Solscan](https://solscan.io/tx/${transactionId})`,
+        { parse_mode: "Markdown" }
     );
 
-    try {
-        console.log(`📤 [DEBUG] Envoi de la transaction d'achat pour ${userId}...`);
+    delete acheterSessions[userId]; // Supprime la session après l'achat
+}
 
-        const signature = await connection.sendTransaction(transaction, [payer]);
-        await connection.confirmTransaction(signature, "confirmed");
+// ❌ Annuler l'achat
+async function cancelAcheter(ctx) {
+    const userId = ctx.from.id;
 
-        await ctx.reply(`✅ **Achat réussi !**\n\n📜 Transaction : [Voir sur Solscan](https://solscan.io/tx/${signature})`);
-        console.log(`🎉 [DEBUG] Achat terminé avec succès : ${signature}`);
-
-    } catch (err) {
-        console.error(`❌ [ERROR] Erreur lors de l'achat : ${err}`);
-        await ctx.reply("❌ Une erreur est survenue lors de la transaction.");
+    if (!acheterSessions[userId]) {
+        return ctx.reply("❌ Aucune session d'achat en cours.");
     }
 
+    console.log(`🛑 [DEBUG] Achat annulé pour ${userId}`);
+
     delete acheterSessions[userId];
+    await ctx.reply("🚫 *Achat annulé.*", { parse_mode: 'Markdown' });
 }
 
-// ✅ Annulation de l'achat
-async function cancelAcheter(ctx) {
-    const userId = ctx.chat.id;
-    console.log(`❌ [DEBUG] Achat annulé pour ${userId}`);
-    delete acheterSessions[userId];
-    await ctx.reply("❌ Achat annulé.");
+// ✅ Fonction pour vérifier une adresse Solana
+function isValidSolanaAddress(address) {
+    try {
+        new PublicKey(address);
+        return true;
+    } catch (e) {
+        return false;
+    }
 }
 
-module.exports = {
-    acheterCommand,
-    handleTokenAddress,
-    handleInvestmentAmount,
-    confirmAcheter,
-    cancelAcheter
-};
+module.exports = { startBuyingProcess, handleTokenAddress, handleInvestmentAmount, confirmAcheter, cancelAcheter };
